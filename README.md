@@ -62,6 +62,7 @@ python tvheadend_m3u_sync.py [options]
 **Sync Options:**
 - `--map-by-name` - Map channels by name when syncing to existing muxes
 - `--uuid-dry-run` - Interactive UUID assignment mode: map channels by name and assign existing mux UUIDs to M3U entries with user confirmation
+- `--sync-playlist-channels-only` / `--playlist-only` - Only sync channels from the playlist without deleting other existing channels in TVHeadend
 
 **Global Options:**
 - `-v, --verbose` - Enable debug logging
@@ -124,9 +125,25 @@ python tvheadend_m3u_sync.py -m my_channels.m3u --url http://tvheadend:9981  # N
 
 # Sync with structured JSON logging
 python tvheadend_m3u_sync.py -m playlist.m3u -n "IPTV Network" --json-log --log-file sync.log
+
+# Sync only playlist channels, preserve other channels
+python tvheadend_m3u_sync.py -m playlist.m3u -n "IPTV Network" --url http://tvheadend:9981 --sync-playlist-channels-only
 ```
 
 ## Advanced Features
+
+### Playlist-Only Sync (`--sync-playlist-channels-only`)
+Synchronizes only the channels present in the M3U playlist without affecting other channels in TVHeadend. This is useful when:
+- You manage multiple channel sources in TVHeadend
+- You want to update only specific channels from a playlist
+- You need to preserve manually configured channels
+- You're working with partial channel lists
+
+**How it works:**
+1. Updates or creates channels that exist in the M3U playlist
+2. Skips the deletion phase entirely
+3. Preserves all existing channels not in the playlist
+4. Perfect for incremental updates or multi-source setups
 
 ### Name-based Channel Mapping (`--map-by-name`)
 Automatically maps M3U entries to existing TVHeadend muxes by normalized channel names. This is useful when:
@@ -163,6 +180,7 @@ TVH_PASSWORD     # Password for authentication
 TVH_NETWORK      # Network name for IPTV channels
 TVH_M3U_FILE     # Path to M3U playlist file
 TVH_AUTH_TYPE    # "digest" (default) or "basic"
+TVH_SYNC_PLAYLIST_ONLY  # "true" to sync only playlist channels without deletion
 ```
 
 ### Configuration File (config.ini)
@@ -174,6 +192,7 @@ password = your_password_here
 network_name = IPTV Network
 m3u_file = /path/to/playlist.m3u
 auth_type = digest
+sync_playlist_channels_only = false
 
 [logging]
 level = INFO
@@ -316,7 +335,7 @@ WantedBy=multi-user.target
 ## Notes
 
 - TVH-UUID tags are added to M3U entries for tracking
-- Old muxes not found in the M3U file will be deleted from TVHeadend
+- Old muxes not found in the M3U file will be deleted from TVHeadend (unless using `--sync-playlist-channels-only`)
 - Authentication supports Digest Auth (secure) and Basic Auth (legacy)
 - **Single file** - no import problems, easy to distribute
 - **Professional logging** with timestamps and levels

@@ -19,6 +19,9 @@ m3u_file = /path/to/your/playlist.m3u
 # Authentication type: digest (default) or basic
 auth_type = digest
 
+# Sync only playlist channels without deleting other channels (true/false)
+sync_playlist_channels_only = false
+
 [logging]
 # Log level: DEBUG, INFO, WARNING, ERROR
 level = INFO

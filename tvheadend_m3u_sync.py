@@ -32,7 +32,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import configparser
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
@@ -87,7 +87,8 @@ class Config:
             'TVH_PASSWORD': 'password',
             'TVH_NETWORK': 'network_name',
             'TVH_M3U_FILE': 'm3u_file',
-            'TVH_AUTH_TYPE': 'auth_type'
+            'TVH_AUTH_TYPE': 'auth_type',
+            'TVH_SYNC_PLAYLIST_ONLY': 'sync_playlist_channels_only'
         }
 
         for env_var, config_key in env_mappings.items():
@@ -619,7 +620,7 @@ class TVHClient:
 
         # Mask sensitive information for logging
         config = Config()
-        masked_headers = {k: config.mask_sensitive_data(v) if 'auth' in k.lower() else v 
+        masked_headers = {k: config.mask_sensitive_data(v) if 'auth' in k.lower() else v
                          for k, v in headers.items()}
 
         logger.debug(f"POST request to: {url}")
@@ -627,8 +628,8 @@ class TVHClient:
         logger.debug(f"Headers: {masked_headers}")
         if data and logger.isEnabledFor(logging.DEBUG):
             # Mask sensitive data in request body
-            masked_data = {k: config.mask_sensitive_data(str(v)) if any(sensitive in k.lower() 
-                              for sensitive in ['password', 'token', 'auth']) else v 
+            masked_data = {k: config.mask_sensitive_data(str(v)) if any(sensitive in k.lower()
+                              for sensitive in ['password', 'token', 'auth']) else v
                           for k, v in data.items()}
             logger.debug(f"Data: {masked_data}")
 
@@ -848,6 +849,9 @@ Examples:
 
   # 10) Arguments can be in any order
   %(prog)s --url http://localhost:9981 -m channels.m3u -n "My IPTV"
+
+  # 11) Sync only playlist channels without deleting other existing channels
+  %(prog)s --sync-playlist-channels-only -m playlist.m3u -n "IPTV Network" --url http://localhost:9981
         """
     )
 
@@ -874,6 +878,9 @@ Examples:
     parser.add_argument('--dry-run', action='store_true', help='Preview changes without applying them')
     parser.add_argument('--map-by-name', action='store_true', help='Map channels by name when syncing to existing muxes')
     parser.add_argument('--uuid-dry-run', action='store_true', help='Interactive UUID assignment mode: map channels by name and assign existing mux UUIDs to M3U entries with user confirmation')
+    parser.add_argument('--sync-playlist-channels-only', '--playlist-only',
+                       action='store_true', dest='sync_playlist_channels_only',
+                       help='Sync only playlist channels, preserve all other channels in TVHeadend')
 
 
     args = parser.parse_args()
@@ -1026,6 +1033,10 @@ def sync_mode(args, config: Config):
     username = getattr(args, 'username', None) or config.get('username', '')
     password = getattr(args, 'password', None) or config.get('password', '')
 
+    # Handle sync_playlist_channels_only from config if not set via CLI
+    if not hasattr(args, 'sync_playlist_channels_only'):
+        args.sync_playlist_channels_only = config.get('sync_playlist_channels_only', '').lower() in ('true', '1', 'yes')
+
     # Auto-generate network name from M3U filename if not provided
     if not network_name and m3u_file:
         # Extract filename without extension and replace underscores with spaces
@@ -1072,6 +1083,10 @@ def sync_mode(args, config: Config):
     if password:
         logger.debug(f"Using password: {config.mask_sensitive_data(password)}")
 
+
+    # Validation warnings for option combinations
+    if getattr(args, 'sync_playlist_channels_only', False) and getattr(args, 'uuid_dry_run', False):
+        logger.warning("Note: --sync-playlist-channels-only with --uuid-dry-run will only assign UUIDs to playlist channels")
 
     mode_info = "[DRY RUN] " if args.dry_run else ""
     logger.info(f"{mode_info}Starting sync: {m3u_file} -> {url} (network: {network_name})")
@@ -1258,49 +1273,74 @@ def sync_mode(args, config: Config):
 
     # Find muxes for the network which have URLs not found in M3U file
     # Should only happen if user removed entry from M3U
-    # Determine mux list for deletion check
-    if args.dry_run:
-        # In dry run, use simulated in-memory state (includes name/url changes)
-        current_muxes = network_muxes
-        logger.debug(f"[DRY RUN] Using simulated mux state for deletion check: {len(current_muxes)} muxes")
-    else:
-        # In real run, refetch actual state from server after updates/creations
-        current_muxes = [mux for mux in client.get_muxes() if mux.network_uuid == current_network.uuid]
-        logger.debug(f"Checking {len(current_muxes)} current muxes for deletion")
+    # Skip deletion if --sync-playlist-channels-only mode is enabled
+    preserved_count = 0
+    deleted_count = 0
 
-
-    if current_muxes:
-        deleted_count = 0
-        for mux in current_muxes:
-            logger.debug(f"Checking mux for deletion: {mux.name} ({mux.url})")
+    if getattr(args, 'sync_playlist_channels_only', False):
+        for mux in network_muxes:
             has_uuid_match = any(entry.tvh_uuid == mux.uuid for entry in m3u_entries)
-            matching_entries = [entry for entry in m3u_entries if entry.url == mux.url]
-            has_url_match = len(matching_entries) > 0
+            has_url_match = any(entry.url == mux.url for entry in m3u_entries)
             if not has_uuid_match and not has_url_match:
-                if deleted_count == 0:
-                    if args.dry_run:
-                        logger.info(f"[DRY RUN] Would delete old muxes from network {current_network.name}...")
-                    else:
-                        logger.info(f"Deleting old muxes from network {current_network.name}...")
-                # Per-mux delete logging is handled inside client.delete_mux
-                client.delete_mux(mux)
-                deleted_count += 1
-            else:
-                reason = "UUID" if has_uuid_match else "URL"
-                logger.debug(f"Mux {mux.name} kept due to {reason} match")
-                for entry in matching_entries:
-                    logger.debug(f"  URL match with M3U entry: {entry.name} ({entry.url})")
+                preserved_count += 1
+                logger.debug(f"Preserving channel: {mux.name} ({mux.url})")
 
-
-        if deleted_count == 0:
-            logger.info("No muxes for deletion")
+        if args.dry_run:
+            logger.info(f"[DRY RUN] Would preserve {preserved_count} existing channels not in playlist (deletion skipped)")
         else:
-            logger.info(f"Deleted {deleted_count} old muxes")
+            logger.info(f"Sync playlist channels only mode: Preserving {preserved_count} existing channels not in playlist")
+    else:
+        # Determine mux list for deletion check
+        if args.dry_run:
+            # In dry run, use simulated in-memory state (includes name/url changes)
+            current_muxes = network_muxes
+            logger.debug(f"[DRY RUN] Using simulated mux state for deletion check: {len(current_muxes)} muxes")
+        else:
+            # In real run, refetch actual state from server after updates/creations
+            current_muxes = [mux for mux in client.get_muxes() if mux.network_uuid == current_network.uuid]
+            logger.debug(f"Checking {len(current_muxes)} current muxes for deletion")
 
 
+        if current_muxes:
+            for mux in current_muxes:
+                logger.debug(f"Checking mux for deletion: {mux.name} ({mux.url})")
+                has_uuid_match = any(entry.tvh_uuid == mux.uuid for entry in m3u_entries)
+                matching_entries = [entry for entry in m3u_entries if entry.url == mux.url]
+                has_url_match = len(matching_entries) > 0
+                if not has_uuid_match and not has_url_match:
+                    if deleted_count == 0:
+                        if args.dry_run:
+                            logger.info(f"[DRY RUN] Would delete old muxes from network {current_network.name}...")
+                        else:
+                            logger.info(f"Deleting old muxes from network {current_network.name}...")
+                    # Per-mux delete logging is handled inside client.delete_mux
+                    client.delete_mux(mux)
+                    deleted_count += 1
+                else:
+                    reason = "UUID" if has_uuid_match else "URL"
+                    logger.debug(f"Mux {mux.name} kept due to {reason} match")
+                    for entry in matching_entries:
+                        logger.debug(f"  URL match with M3U entry: {entry.name} ({entry.url})")
+
+
+            if deleted_count == 0:
+                logger.info("No muxes for deletion")
+            else:
+                logger.info(f"Deleted {deleted_count} old muxes")
+
+
+    # Final summary
     if args.dry_run:
+        if getattr(args, 'sync_playlist_channels_only', False):
+            logger.info(f"[DRY RUN] Summary: Would update {updated_count} channels, create {created_count} new channels, preserve {preserved_count} other channels")
+        else:
+            logger.info(f"[DRY RUN] Summary: Would update {updated_count} channels, create {created_count} new channels, delete {deleted_count} old channels")
         logger.info("[DRY RUN] Synchronization simulation completed - no actual changes made")
     else:
+        if getattr(args, 'sync_playlist_channels_only', False):
+            logger.info(f"Summary: Updated {updated_count} channels, created {created_count} new channels, preserved {preserved_count} other channels")
+        else:
+            logger.info(f"Summary: Updated {updated_count} channels, created {created_count} new channels, deleted {deleted_count} old channels")
         logger.info("Synchronization completed successfully")
 
 
