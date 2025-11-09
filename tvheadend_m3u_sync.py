@@ -652,32 +652,46 @@ class TVHClient:
         response.raise_for_status()
         return response.json()
 
-    def create_new_iptv_network(self, name: str, auto_scan: bool = False):
-        """Create new IPTV network"""
-        logger = logging.getLogger('tvheadend_m3u_sync')
+def create_new_iptv_network(self, name: str, auto_scan: bool = False):
+    logger = logging.getLogger('tvheadend_m3u_sync')
 
-        if self.dry_run:
-            logger.info(f"[DRY RUN] Would create new IPTV network: {name}")
-            return
+    if self.dry_run:
+        logger.info(f"[DRY RUN] Would create new IPTV network: {name}")
+        return
 
+    if auto_scan:
         conf_data = {
             "enabled": True,
             "max_timeout": 10,
             "networkname": name,
             "pnetworkname": name,
-            "bouquet": auto_scan,
-            "scan_create": 1 if auto_scan else 0,
+            "bouquet": True,
+            "scan_create": 1,
             "max_streams": 0
         }
-
-        data = {
-            "class": "iptv_network",
-            "conf": json.dumps(conf_data)
+        logger.info(f"Creating IPTV network '{name}' with auto-scan enabled")
+    else:
+        conf_data = {
+            "enabled": False,
+            "max_timeout": 10,
+            "networkname": name,
+            "pnetworkname": name,
+            "bouquet": False,
+            "scan_create": 0,
+            "max_streams": 0,
+            "autodiscovery": 0,
+            "skipinitscan": True
         }
+        logger.info(f"Creating IPTV network '{name}' with all scanning disabled")
 
-        response = self._post_request("api/mpegts/network/create", data)
-        response.raise_for_status()
-        logger.info(f"Created new IPTV network: {name}")
+    data = {
+        "class": "iptv_network",
+        "conf": json.dumps(conf_data)
+    }
+
+    response = self._post_request("api/mpegts/network/create", data)
+    response.raise_for_status()
+    logger.info(f"Created new IPTV network: {name}")
 
     def add_mux(self, network: Network, entry: Entry) -> str:
         """Add new mux to network"""
