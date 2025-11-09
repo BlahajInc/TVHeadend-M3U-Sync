@@ -88,8 +88,8 @@ class Config:
             'TVH_NETWORK': 'network_name',
             'TVH_M3U_FILE': 'm3u_file',
             'TVH_AUTH_TYPE': 'auth_type',
-            'TVH_SYNC_PLAYLIST_ONLY': 'sync_playlist_channels_only'
-        }
+            'TVH_SYNC_PLAYLIST_ONLY': 'sync_playlist_channels_only',
+            'TVH_ENABLE_AUTO_SCAN' : 'enable_auto_scan'}
 
         for env_var, config_key in env_mappings.items():
             value = os.getenv(env_var)
@@ -652,7 +652,7 @@ class TVHClient:
         response.raise_for_status()
         return response.json()
 
-    def create_new_iptv_network(self, name: str):
+    def create_new_iptv_network(self, name: str, auto_scan: bool = False):
         """Create new IPTV network"""
         logger = logging.getLogger('tvheadend_m3u_sync')
 
@@ -665,8 +665,8 @@ class TVHClient:
             "max_timeout": 10,
             "networkname": name,
             "pnetworkname": name,
-            "bouquet": True,
-            "scan_create": 1,
+            "bouquet": auto_scan,
+            "scan_create": 1 if auto_scan else 0,
             "max_streams": 0
         }
 
@@ -878,9 +878,9 @@ Examples:
     parser.add_argument('--dry-run', action='store_true', help='Preview changes without applying them')
     parser.add_argument('--map-by-name', action='store_true', help='Map channels by name when syncing to existing muxes')
     parser.add_argument('--uuid-dry-run', action='store_true', help='Interactive UUID assignment mode: map channels by name and assign existing mux UUIDs to M3U entries with user confirmation')
-    parser.add_argument('--sync-playlist-channels-only', '--playlist-only',
-                       action='store_true', dest='sync_playlist_channels_only',
-                       help='Sync only playlist channels, preserve all other channels in TVHeadend')
+    parser.add_argument('--sync-playlist-channels-only', '--playlist-only', action='store_true', dest='sync_playlist_channels_only', help='Sync only playlist channels, preserve all other channels in TVHeadend')
+    parser.add_argument('--enable-auto-scan', action='store_true',help='Enable automatic network scanning and bouquet creation (disabled by default)')
+
 
 
     args = parser.parse_args()
@@ -1367,7 +1367,9 @@ def get_network(network_name_to_sync: str, client: TVHClient) -> Network:
             )
         else:
             logger.info(f"Network '{network_name_to_sync}' not found, creating new IPTV network...")
-            client.create_new_iptv_network(network_name_to_sync)
+            auto_scan = getattr(args, "enable_auto_scan", False)
+            client.create_new_iptv_network(network_name_to_sync, auto_scan=auto_scan)
+
 
 
             # Refetch and find the new network
